@@ -688,6 +688,7 @@ public class Socket: PhoenixTransportDelegate {
       urlComponents.queryItems?.append(contentsOf: params.map {
         URLQueryItem(name: $0.key, value: String(describing: $0.value))
       })
+      urlComponents.percentEncodedQuery = urlComponents.percentEncodedQuery?.replacingOccurrences(of: "+", with: "%2B")
     }
 
     guard let qualifiedUrl = urlComponents.url
