@@ -143,7 +143,8 @@ public class Socket: PhoenixTransportDelegate {
   let stateChangeCallbacks: StateChangeCallbacks = StateChangeCallbacks()
   
   /// Collection on channels created for the Socket
-  public internal(set) var channels: [Channel] = []
+  public var channels: [Channel] { _channels.copy() }
+  private var _channels = SynchronizedArray<Channel>()
   
   /// Buffers messages that need to be sent once the socket has connected. It is an array
   /// of tuples, with the ref of the message to send and the callback that will send the message.
@@ -237,6 +238,10 @@ public class Socket: PhoenixTransportDelegate {
   public var isConnected: Bool {
     return self.connectionState == .open
   }
+    
+  public var isConnecting: Bool {
+    return self.connectionState == .connecting
+  }
   
   /// - return: The state of the connect. [.connecting, .open, .closing, .closed]
   public var connectionState: PhoenixTransportReadyState {
@@ -247,8 +252,8 @@ public class Socket: PhoenixTransportDelegate {
   /// will be sent through the connection. If the Socket is already connected,
   /// then this call will be ignored.
   public func connect() {
-    // Do not attempt to reconnect if the socket is currently connected
-    guard !isConnected else { return }
+    // Do not attempt to reconnect if the socket is currently connected or in the process of connecting
+    guard !isConnected && !isConnecting else { return }
     
     // Reset the close status when attempting to connect
     self.closeStatus = .unknown
@@ -557,7 +562,7 @@ public class Socket: PhoenixTransportDelegate {
   public func channel(_ topic: String,
                       params: [String: Any] = [:]) -> Channel {
     let channel = Channel(topic: topic, params: params, socket: self)
-    self.channels.append(channel)
+    _channels.append(channel)
     
     return channel
   }
@@ -574,7 +579,7 @@ public class Socket: PhoenixTransportDelegate {
   /// - parameter channel: Channel to remove
   public func remove(_ channel: Channel) {
     self.off(channel.stateChangeRefs)
-    self.channels.removeAll(where: { $0.joinRef == channel.joinRef })
+    _channels.removeAll(where: { $0.joinRef == channel.joinRef })
   }
   
   /// Removes `onOpen`, `onClose`, `onError,` and `onMessage` registrations.
@@ -710,17 +715,19 @@ public class Socket: PhoenixTransportDelegate {
     }
     
     // Dispatch the message to all channels that belong to the topic
-    self.channels
-      .filter( { $0.isMember(message) } )
-      .forEach( { $0.trigger(message) } )
-    
+    _channels.forEach { channel in
+      if channel.isMember(message) {
+        channel.trigger(message)
+      }
+    }
+
     // Inform all onMessage callbacks of the message
     self.stateChangeCallbacks.message.forEach({ $0.callback.call(message) })
   }
   
   /// Triggers an error event to all of the connected Channels
   internal func triggerChannelError() {
-    self.channels.forEach { (channel) in
+    _channels.forEach { channel in
       // Only trigger a channel error if it is in an "opened" state
       if !(channel.isErrored || channel.isLeaving || channel.isClosed) {
         channel.trigger(event: ChannelEvent.error)
@@ -778,7 +785,7 @@ public class Socket: PhoenixTransportDelegate {
   // Leaves any channel that is open that has a duplicate topic
   internal func leaveOpenTopic(topic: String) {
     guard
-      let dupe = self.channels.first(where: { $0.topic == topic && ($0.isJoined || $0.isJoining) })
+      let dupe = _channels.first(where: { $0.topic == topic && ($0.isJoined || $0.isJoining) })
     else { return }
     
     self.logItems("transport", "leaving duplicate topic: [\(topic)]" )
